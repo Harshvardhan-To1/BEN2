@@ -58,7 +58,6 @@ class Mlp(nn.Module):
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
-        # logging.debug(f"Initialized Mlp: in={in_features}, hidden={hidden_features}, out={out_features}")
 
     def forward(self, x):
         x = self.fc1(x)
@@ -72,11 +71,6 @@ class Mlp(nn.Module):
 def window_partition(x, window_size):
     """
     Partitions a tensor into non-overlapping windows.
-    Args:
-        x: (B, H, W, C)
-        window_size (int): window size
-    Returns:
-        windows: (num_windows*B, window_size, window_size, C)
     """
     B, H, W, C = x.shape
     x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
@@ -87,13 +81,6 @@ def window_partition(x, window_size):
 def window_reverse(windows, window_size, H, W):
     """
     Reverses the window partition operation.
-    Args:
-        windows: (num_windows*B, window_size, window_size, C)
-        window_size (int): Window size
-        H (int): Height of image
-        W (int): Width of image
-    Returns:
-        x: (B, H, W, C)
     """
     B = int(windows.shape[0] / (H * W / window_size / window_size))
     x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
@@ -115,11 +102,6 @@ class WindowAttention(nn.Module):
         self.relative_position_bias_table = nn.Parameter(
             torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))
 
-        # --- POTENTIAL CPU OPERATION ---
-        # The following operations to create `relative_position_index` are performed on the CPU.
-        # However, since it's done during initialization and registered as a buffer, PyTorch
-        # will correctly move it to the GPU when `model.to(device)` is called.
-        # No change is needed, but it's good to be aware of.
         coords_h = torch.arange(self.window_size[0])
         coords_w = torch.arange(self.window_size[1])
         coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing="ij"))
@@ -201,7 +183,6 @@ class SwinTransformerBlock(nn.Module):
         x = self.norm1(x)
         x = x.view(B, H, W, C)
 
-        # Pad feature maps to multiples of window size
         pad_l = pad_t = 0
         pad_r = (self.window_size - W % self.window_size) % self.window_size
         pad_b = (self.window_size - H % self.window_size) % self.window_size
@@ -209,7 +190,6 @@ class SwinTransformerBlock(nn.Module):
             x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
         _, Hp, Wp, _ = x.shape
 
-        # Cyclic shift
         if self.shift_size > 0:
             shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
             attn_mask = mask_matrix
@@ -217,18 +197,14 @@ class SwinTransformerBlock(nn.Module):
             shifted_x = x
             attn_mask = None
 
-        # Partition windows
         x_windows = window_partition(shifted_x, self.window_size)
         x_windows = x_windows.view(-1, self.window_size * self.window_size, C)
 
-        # W-MSA/SW-MSA
         attn_windows = self.attn(x_windows, mask=attn_mask)
 
-        # Merge windows
         attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
         shifted_x = window_reverse(attn_windows, self.window_size, Hp, Wp)
 
-        # Reverse cyclic shift
         if self.shift_size > 0:
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
@@ -274,19 +250,9 @@ class PatchMerging(nn.Module):
 class BasicLayer(nn.Module):
     """ A basic Swin Transformer layer for one stage. """
     def __init__(self,
-                 dim,
-                 depth,
-                 num_heads,
-                 window_size=7,
-                 mlp_ratio=4.,
-                 qkv_bias=True,
-                 qk_scale=None,
-                 drop=0.,
-                 attn_drop=0.,
-                 drop_path=0.,
-                 norm_layer=nn.LayerNorm,
-                 downsample=None,
-                 use_checkpoint=False):
+                 dim, depth, num_heads, window_size=7, mlp_ratio=4.,
+                 qkv_bias=True, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
         super().__init__()
         self.window_size = window_size
         self.shift_size = window_size // 2
@@ -295,15 +261,10 @@ class BasicLayer(nn.Module):
 
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(
-                dim=dim,
-                num_heads=num_heads,
-                window_size=window_size,
+                dim=dim, num_heads=num_heads, window_size=window_size,
                 shift_size=0 if (i % 2 == 0) else self.shift_size,
-                mlp_ratio=mlp_ratio,
-                qkv_bias=qkv_bias,
-                qk_scale=qk_scale,
-                drop=drop,
-                attn_drop=attn_drop,
+                mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop, attn_drop=attn_drop,
                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                 norm_layer=norm_layer)
             for i in range(depth)])
@@ -314,7 +275,6 @@ class BasicLayer(nn.Module):
             self.downsample = None
 
     def forward(self, x, H, W):
-        # Note: `img_mask` is correctly created on the same device as `x`.
         Hp = int(np.ceil(H / self.window_size)) * self.window_size
         Wp = int(np.ceil(W / self.window_size)) * self.window_size
         img_mask = torch.zeros((1, Hp, Wp, 1), device=x.device)
@@ -387,7 +347,6 @@ class SwinTransformer(nn.Module):
                  frozen_stages=-1, use_checkpoint=False):
         super().__init__()
         logging.info("Initializing SwinTransformer backbone.")
-        self.pretrain_img_size = pretrain_img_size
         self.num_layers = len(depths)
         self.embed_dim = embed_dim
         self.ape = ape
@@ -437,12 +396,10 @@ class SwinTransformer(nn.Module):
 
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
-            logging.info(f"Freezing patch_embed stage.")
             self.patch_embed.eval()
             for param in self.patch_embed.parameters():
                 param.requires_grad = False
         if self.frozen_stages >= 1 and self.ape:
-            logging.info(f"Freezing absolute_pos_embed stage.")
             self.absolute_pos_embed.requires_grad = False
         if self.frozen_stages >= 2:
             self.pos_drop.eval()
@@ -451,12 +408,9 @@ class SwinTransformer(nn.Module):
                 m.eval()
                 for param in m.parameters():
                     param.requires_grad = False
-                logging.info(f"Freezing SwinTransformer layer {i}.")
 
     def forward(self, x):
-        logging.debug(f"SwinTransformer forward pass started. Input shape: {x.shape}")
         x = self.patch_embed(x)
-        logging.debug(f"After patch_embed. Shape: {x.shape}")
         
         Wh, Ww = x.size(2), x.size(3)
         if self.ape:
@@ -470,14 +424,12 @@ class SwinTransformer(nn.Module):
         for i in range(self.num_layers):
             layer = self.layers[i]
             x_out, H, W, x, Wh, Ww = layer(x, Wh, Ww)
-            logging.debug(f"After Swin layer {i}. Output shape: {x_out.shape}, Downsampled shape: {x.shape}")
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 x_out = norm_layer(x_out)
                 out = x_out.view(-1, H, W, self.num_features[i]).permute(0, 3, 1, 2).contiguous()
                 outs.append(out)
         
-        logging.debug("SwinTransformer forward pass finished.")
         return tuple(outs)
 
 
@@ -518,10 +470,6 @@ class PositionEmbeddingSine:
         self.dim_t = torch.arange(0, self.num_pos_feats, dtype=torch.float32)
 
     def __call__(self, b, h, w, device):
-        # --- GPU/CPU OPTIMIZATION ---
-        # This function was creating tensors on the CPU and then moving them to the GPU on every call.
-        # By accepting a 'device' argument, we can create tensors directly on the target device,
-        # avoiding unnecessary and slow CPU->GPU data transfers during the forward pass.
         logging.debug(f"Generating sine positional embedding on device: {device}")
         
         mask = torch.zeros([b, h, w], dtype=torch.bool, device=device)
@@ -548,7 +496,6 @@ class MCLM(nn.Module):
     """Multi-scale Cross-attention Local-to-Global Module"""
     def __init__(self, d_model, num_heads, pool_ratios=[1, 4, 8]):
         super(MCLM, self).__init__()
-        logging.info(f"Initializing MCLM with d_model={d_model}, num_heads={num_heads}, pool_ratios={pool_ratios}")
         self.attention = nn.ModuleList([nn.MultiheadAttention(d_model, num_heads, dropout=0.1) for _ in range(5)])
         self.linear1 = nn.Linear(d_model, d_model * 2)
         self.linear2 = nn.Linear(d_model * 2, d_model)
@@ -568,13 +515,10 @@ class MCLM(nn.Module):
     def forward(self, l, g):
         b, c, h, w = l.size()
         device = l.device
-        logging.debug(f"MCLM forward pass started. Local shape: {l.shape}, Global shape: {g.shape}, Device: {device}")
         
         concated_locs = rearrange(l, '(hg wg b) c h w -> b c (hg h) (wg w)', hg=2, wg=2)
 
-        # Generate positional embeddings only once and cache them
         if self.p_poses is None or self.g_pos is None:
-            logging.info("Generating and caching positional embeddings for MCLM.")
             pools_poses = []
             for pool_ratio in self.pool_ratios:
                 tgt_hw = (round(h / pool_ratio), round(w / pool_ratio))
@@ -586,7 +530,6 @@ class MCLM(nn.Module):
             pos_emb = self.positional_encoding(g.shape[0], g.shape[2], g.shape[3], device=device)
             self.g_pos = rearrange(pos_emb, 'b c h w -> (h w) b c')
 
-        # Multi-scale pooling for keys and values
         pools = []
         for pool_ratio in self.pool_ratios:
             tgt_hw = (round(h / pool_ratio), round(w / pool_ratio))
@@ -596,13 +539,11 @@ class MCLM(nn.Module):
         
         g_hw_b_c = rearrange(g, 'b c h w -> (h w) b c')
         
-        # Attention between global (q) and pooled local features (k,v)
         g_hw_b_c = g_hw_b_c + self.dropout1(self.attention[0](g_hw_b_c + self.g_pos, pools + self.p_poses, pools)[0])
         g_hw_b_c = self.norm1(g_hw_b_c)
         g_hw_b_c = g_hw_b_c + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(g_hw_b_c)))))
         g_hw_b_c = self.norm2(g_hw_b_c)
 
-        # Attention between original local (q) and refreshed global (k,v)
         l_hw_b_c = rearrange(l, "b c h w -> (h w) b c")
         _g_hw_b_c = rearrange(rearrange(g_hw_b_c, '(h w) b c -> h w b c', h=h, w=w), "(ng h) (nw w) b c -> (h w) (ng nw b) c", ng=2, nw=2)
         outputs_re = [self.attention[i + 1](_l, _g, _g)[0] for i, (_l, _g) in enumerate(zip(l_hw_b_c.chunk(4, dim=1), _g_hw_b_c.chunk(4, dim=1)))]
@@ -614,7 +555,6 @@ class MCLM(nn.Module):
         l_hw_b_c = self.norm2(l_hw_b_c)
 
         l = torch.cat((l_hw_b_c, g_hw_b_c), 1)
-        logging.debug("MCLM forward pass finished.")
         return rearrange(l, "(h w) b c -> b c h w", h=h, w=w)
 
 
@@ -622,7 +562,6 @@ class MCRM(nn.Module):
     """Multi-scale Cross-attention Refinement Module"""
     def __init__(self, d_model, num_heads, pool_ratios=[4, 8, 16], h=None):
         super(MCRM, self).__init__()
-        logging.info(f"Initializing MCRM with d_model={d_model}, num_heads={num_heads}, pool_ratios={pool_ratios}")
         self.attention = nn.ModuleList([nn.MultiheadAttention(d_model, num_heads, dropout=0.1) for _ in range(4)])
         self.linear3 = nn.Linear(d_model, d_model * 2)
         self.linear4 = nn.Linear(d_model * 2, d_model)
@@ -638,7 +577,6 @@ class MCRM(nn.Module):
 
     def forward(self, x):
         b, c, h, w = x.size()
-        logging.debug(f"MCRM forward pass started. Input shape: {x.shape}")
         loc, glb = x.split([4, 1], dim=0)
 
         patched_glb = rearrange(glb, 'b c (hg h) (wg w) -> (hg wg b) c h w', hg=2, wg=2)
@@ -666,7 +604,6 @@ class MCRM(nn.Module):
         src = src.permute(1, 2, 0).reshape(4, c, h, w)
         glb = glb + F.interpolate(patches2image(src), size=glb.shape[-2:], mode='nearest')
         
-        logging.debug("MCRM forward pass finished.")
         return torch.cat((src, glb), 0), token_attention_map
 
 
@@ -714,28 +651,29 @@ class BEN_Base(nn.Module):
         logging.info(f"Starting BEN_Base forward pass for a batch of {real_batch} images.")
         
         shallow_batch = self.shallow(x)
-        glb_batch = rescale_to(x, scale_factor=0.5, interpolation='bilinear')
+        
+        # --- OPTIMIZATION: Vectorized Input Preparation ---
+        # The original code used a for-loop to prepare inputs for each image in the batch.
+        # This has been vectorized to prepare the entire batch at once, allowing for a single,
+        # efficient parallel pass through the backbone model.
+        logging.info("Preparing vectorized input for the entire batch.")
+        loc_batch = image2patches(x) # Shape: (B*4, C, H', W')
+        glb_batch = rescale_to(x, scale_factor=0.5, interpolation='bilinear') # Shape: (B, C, H', W')
 
-        # --- MAJOR CPU/GPU BOTTLENECK ---
-        # The following loop processes each image in the batch sequentially. This is highly inefficient
-        # as it prevents parallel GPU processing and involves repeated CPU-based logic and concatenation.
-        # A fully-vectorized implementation would prepare the entire batch on the GPU at once,
-        # feed it to the backbone, and process the batched features without a loop.
-        # This would require refactoring the MCLM/MCRM modules to be batch-aware.
-        # For now, we log the inefficient operation.
-        logging.warning("Entering inefficient per-image loop. This is a major performance bottleneck.")
-        final_input = None
-        for i in range(real_batch):
-            logging.debug(f"Preparing input for image {i+1}/{real_batch} in the batch.")
-            loc_batch = image2patches(x[i:i+1])
-            input_ = torch.cat((loc_batch, glb_batch[i:i+1]), dim=0)
-            final_input = input_ if final_input is None else torch.cat((final_input, input_), dim=0)
+        # Reshape and interleave local and global patches for each image in the batch.
+        # The result is a tensor where every 5 rows correspond to one image (4 local + 1 global).
+        loc_batch_reshaped = loc_batch.view(real_batch, 4, *loc_batch.shape[1:])
+        glb_batch_expanded = glb_batch.unsqueeze(1)
+        final_input = torch.cat((loc_batch_reshaped, glb_batch_expanded), dim=1).view(real_batch * 5, *loc_batch.shape[1:])
 
         logging.info(f"Running backbone on prepared batch of shape {final_input.shape}.")
         features = self.backbone(final_input)
         
         outputs = []
-        logging.warning("Entering second inefficient per-image loop for feature decoding.")
+        # --- NOTE: This decoding loop remains sequential. ---
+        # Vectorizing this part would require significant changes to MCLM and MCRM modules.
+        # The main performance gain comes from vectorizing the backbone pass above.
+        logging.warning("Entering sequential per-image loop for feature decoding.")
         for i in range(real_batch):
             logging.debug(f"Decoding features for image {i+1}/{real_batch}.")
             start, end = i * 5, (i + 1) * 5
@@ -786,7 +724,6 @@ class BEN_Base(nn.Module):
         except Exception as e:
             logging.error(f"Failed to load checkpoints from {model_path}. Error: {e}", exc_info=True)
             raise
-        del model_dict
 
     def inference(self, image_input, refine_foreground=False):
         set_random_seed(9)
@@ -796,9 +733,6 @@ class BEN_Base(nn.Module):
         images = image_input if is_batch else [image_input]
         logging.info(f"Starting inference for {'a batch of ' + str(len(images)) if is_batch else 'a single'} image(s). Refine foreground: {refine_foreground}.")
 
-        # --- CPU-bound operation ---
-        # Image loading, resizing, and transformations are done here. PIL operations run on the CPU.
-        # This is standard, but batching these transforms on the GPU could be faster if performance is critical.
         preprocessed_images = []
         original_metadata = []
         for img in images:
@@ -809,7 +743,6 @@ class BEN_Base(nn.Module):
             preprocessed_images.append(processed_img)
             original_metadata.append({'h': h, 'w': w, 'original_image': original_img})
         
-        # Select transform based on CUDA availability and data type
         use_cuda = torch.cuda.is_available()
         transform = img_transform if use_cuda else img_transform32
         device = next(self.parameters()).device
@@ -826,8 +759,6 @@ class BEN_Base(nn.Module):
             res = self.forward(img_tensor)
         logging.info(f"Model forward pass completed. Result tensor shape: {res.shape}")
         
-        # --- CPU-bound operation ---
-        # Post-processing (refining, alpha channel blending) runs on the CPU using PIL and NumPy.
         final_results = []
         for i in range(res.shape[0]):
             res_single = res[i:i+1]
@@ -835,13 +766,11 @@ class BEN_Base(nn.Module):
             original_image = meta['original_image']
 
             if refine_foreground:
-                logging.debug(f"Refining foreground for image {i+1}...")
                 pred_pil = transforms.ToPILImage()(res_single.squeeze(0).float())
                 image_masked = refine_foreground_process(original_image, pred_pil)
                 image_masked.putalpha(pred_pil.resize(original_image.size))
                 final_results.append(image_masked)
             else:
-                logging.debug(f"Post-processing mask for image {i+1}...")
                 alpha = postprocess_image(res_single, im_size=[meta['w'], meta['h']])
                 pred_pil = Image.fromarray(alpha)
                 mask = pred_pil.resize(original_image.size, Image.LANCZOS)
@@ -856,8 +785,6 @@ class BEN_Base(nn.Module):
         logging.info(f"Starting video segmentation for: {video_path}")
         logging.info(f"Config: output_path='{output_path}', fps={fps}, refine={refine_foreground}, batch_size={batch}, webm={webm}")
         
-        # --- CPU-bound operation: Video I/O ---
-        # OpenCV reads frames from the video file on the CPU.
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logging.error(f"Cannot open video: {video_path}")
@@ -876,7 +803,6 @@ class BEN_Base(nn.Module):
         while True:
             ret, frame = cap.read()
             if not ret:
-                # Process any remaining frames in the last batch
                 if batch_frames:
                     logging.info(f"Processing final batch of {len(batch_frames)} frames.")
                     batch_results = self.inference(batch_frames, refine_foreground)
@@ -885,7 +811,6 @@ class BEN_Base(nn.Module):
                         print(f"Processed frames {frame_idx-len(batch_frames)+1} to {frame_idx} of {total_frames}")
                 break
 
-            # Convert frame from BGR (OpenCV) to RGB (PIL) - CPU operation
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             pil_frame = Image.fromarray(frame_rgb)
             batch_frames.append(pil_frame)
@@ -903,8 +828,6 @@ class BEN_Base(nn.Module):
         processing_time = time.time() - start_time
         logging.info(f"Finished processing all frames in {processing_time:.2f} seconds.")
         
-        # --- CPU-bound operation: Video Writing ---
-        # The processed frames are written to a new video file on the CPU using FFmpeg/OpenCV.
         if webm:
             output_file = os.path.join(output_path, "foreground.webm")
             logging.info(f"Saving output to WebM with alpha channel: {output_file}")
@@ -972,14 +895,12 @@ def pil_images_to_webm_alpha(images, output_path, fps=30):
     logging.info(f"Converting {len(images)} PIL images to WebM (VP9 with alpha) at {fps} FPS. Output: {output_path}")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with tempfile.TemporaryDirectory() as tmpdir:
-        logging.debug(f"Using temporary directory for frames: {tmpdir}")
         for idx, img in enumerate(images):
             if img.mode != "RGBA": img = img.convert("RGBA")
             img.save(os.path.join(tmpdir, f"{idx:06d}.png"), "PNG")
 
         ffmpeg_cmd = ["ffmpeg", "-y", "-framerate", str(fps), "-i", os.path.join(tmpdir, "%06d.png"),
                       "-c:v", "libvpx-vp9", "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", output_path]
-        logging.debug(f"Running FFmpeg command: {' '.join(ffmpeg_cmd)}")
         subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
     logging.info(f"WebM with alpha saved to {output_path}")
 
@@ -1000,7 +921,6 @@ def add_audio_to_video(video_without_audio_path, original_video_path, output_pat
 
 
 def refine_foreground_process(image, mask, r=90):
-    """CPU-bound foreground refinement using NumPy and OpenCV."""
     if mask.size != image.size: mask = mask.resize(image.size)
     image = np.array(image) / 255.0
     mask = np.array(mask) / 255.0
@@ -1027,7 +947,6 @@ def FB_blur_fusion_foreground_estimator(image, F, B, alpha, r=90):
     return np.clip(F, 0, 1), blurred_B
 
 def postprocess_image(result: torch.Tensor, im_size: list) -> np.ndarray:
-    """Post-processes the model output tensor to an image array."""
     result = F.interpolate(result, size=im_size, mode='bilinear')
     result = torch.squeeze(result, 0)
     ma, mi = torch.max(result), torch.min(result)
